@@ -1,0 +1,11 @@
+feedparser
+requests
+beautifulsoup4
+lxml
+plyer
+flask
+flask-limiter
+python-dotenv
+transformers
+torch
+sentencepiece
