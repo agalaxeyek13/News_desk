@@ -87,6 +87,74 @@ ET_FEEDS = {
     "sports":              "https://economictimes.indiatimes.com/sports/rssfeeds/1977021501.cms",
 }
 
+# FDE Briefing — US-Iran daily digest
+FDE_TEAM_NAME = "FDE"
+
+# Local LLM (llama-cpp-python, GPU-offloaded) — used for entity extraction
+# and synthesis instead of a cloud API.
+FDE_LOCAL_MODEL_PATH = os.getenv(
+    "FDE_LOCAL_MODEL_PATH",
+    r"C:\Users\Galaxeye\Documents\GitHub\isrgpt-lite\models\llms\google_gemma-4-26B-A4B-it-Q4_K_M.gguf",
+)
+FDE_LOCAL_MODEL_CTX = int(os.getenv("FDE_LOCAL_MODEL_CTX", 4096))
+FDE_LOCAL_MODEL_GPU_LAYERS = int(os.getenv("FDE_LOCAL_MODEL_GPU_LAYERS", -1))  # -1 = all layers on GPU
+
+# One RSS feed per source. Category is used only for display grouping.
+FDE_RSS_FEEDS = [
+    {"source": "DoD",              "category": "Official",   "url": "https://www.defense.gov/DesktopModules/ArticleCS/RSS.ashx?ContentType=1&Site=945&max=20"},
+    {"source": "Defense News",     "category": "Trade Press", "url": "https://www.defensenews.com/arc/outboundfeeds/rss/category/pentagon/?outputType=xml"},
+    {"source": "Breaking Defense", "category": "Trade Press", "url": "https://breakingdefense.com/feed/"},
+    {"source": "The War Zone",     "category": "Trade Press", "url": "https://www.twz.com/feed"},
+    {"source": "Long War Journal", "category": "Analysis",   "url": "https://www.longwarjournal.org/feed"},
+    {"source": "Atlantic Council", "category": "Analysis",   "url": "https://www.atlanticcouncil.org/feed/"},
+    {"source": "RAND",             "category": "Analysis",   "url": "https://www.rand.org/content/rand/pubs.xml"},
+    {"source": "Al-Monitor",       "category": "Regional",   "url": "https://www.al-monitor.com/rss.xml"},
+    {"source": "Times of Israel",  "category": "Regional",   "url": "https://www.timesofisrael.com/feed/"},
+    {"source": "Middle East Eye",  "category": "Regional",   "url": "https://www.middleeasteye.net/rss"},
+    {"source": "Naval News",       "category": "Trade Press", "url": "https://www.navalnews.com/feed/"},
+    {"source": "The Aviationist",  "category": "Trade Press", "url": "https://theaviationist.com/feed/"},
+]
+
+# How far back an article can be published and still count as "today's" news
+FDE_RECENCY_HOURS = int(os.getenv("FDE_RECENCY_HOURS", 48))
+
+# ISW's Iran Update has no RSS — scraped from this listing page instead.
+FDE_ISW_LISTING_URL = "https://www.understandingwar.org/backgrounder/iran-update"
+
+# Cheap keyword gate applied before any LLM call — must match at least one.
+# Covers the Iran-linked actors and theater, not just the word "Iran":
+# a Houthi strike on Saudi shipping or an IRGC-backed militia attack in
+# Iraq is part of this conflict and was being dropped without these.
+FDE_KEYWORDS = [
+    # Iran proper
+    "iran", "iranian", "tehran", "irgc", "khamenei", "pezeshkian",
+    "quds force", "revolutionary guard", "bandar abbas", "natanz", "fordow",
+    "mahan air", "artesh", "basij",
+    # Waterways / theater
+    "hormuz", "persian gulf", "gulf of oman", "red sea", "bab al-mandeb",
+    "bab el-mandeb", "strait of tiran",
+    # US military presence
+    "centcom", "central command", "fifth fleet", "al udeid",
+    # Iran-aligned actors
+    "houthi", "hezbollah", "kataib", "popular mobilization",
+    "islamic resistance in iraq", "ansar allah",
+    # Regional states central to this conflict.
+    # Deliberately NOT "israel"/"israeli": Israel-Iran stories already match
+    # on "iran", while those words on their own pull in the whole
+    # Gaza/West Bank domestic news cycle, which is not this briefing.
+    "yemen", "saudi arabia", "saudi", "iraq", "iraqi",
+]
+
+# Comma-separated internal recipient list, e.g. "a@company.com,b@company.com"
+FDE_RECIPIENTS = [e.strip() for e in os.getenv("FDE_RECIPIENTS", "").split(",") if e.strip()]
+FDE_SENDER = os.getenv("FDE_SENDER", "")
+
+# Outlook / Microsoft 365 SMTP
+FDE_SMTP_HOST = os.getenv("FDE_SMTP_HOST", "smtp.office365.com")
+FDE_SMTP_PORT = int(os.getenv("FDE_SMTP_PORT", 587))
+FDE_SMTP_USER = os.getenv("FDE_SMTP_USER", "")
+FDE_SMTP_PASSWORD = os.getenv("FDE_SMTP_PASSWORD", "")
+
 # ScanX settings
 SCANX_NEWS_FLASH_URL = "https://scanx.trade/stock-market-news/news-feeds"
 SCANX_LATEST_URL = "https://scanx.trade/stock-market-news"

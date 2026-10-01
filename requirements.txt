@@ -9,3 +9,11 @@ python-dotenv
 transformers
 torch
 sentencepiece
+# llama-cpp-python: install with GPU support via
+#   set CMAKE_ARGS=-G Ninja -DGGML_CUDA=on -DCMAKE_CUDA_ARCHITECTURES=native
+#   set FORCE_CMAKE=1
+#   pip install llama-cpp-python
+# (run inside a Visual Studio x64 dev prompt on Windows — a plain
+# `pip install llama-cpp-python` builds CPU-only)
+llama-cpp-python
+pywin32; platform_system == "Windows"
