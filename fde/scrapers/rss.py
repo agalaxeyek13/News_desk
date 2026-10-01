@@ -24,13 +24,27 @@ HEADERS = {
 }
 
 
+def _entry_thumbnail(entry, desc_soup: BeautifulSoup) -> str:
+    """Image URL from media:thumbnail / media:content / an image enclosure /
+    the first <img> in the description — whichever the feed provides."""
+    for key in ("media_thumbnail", "media_content"):
+        for media in entry.get(key) or []:
+            if media.get("url") and media.get("medium", "image") == "image":
+                return media["url"]
+    for link in entry.get("links") or []:
+        if link.get("rel") == "enclosure" and (link.get("type") or "").startswith("image/"):
+            return link.get("href", "")
+    img = desc_soup.find("img", src=True)
+    return img["src"] if img else ""
+
+
 def _parse_feed(source: str, category: str, url: str) -> list:
     """Parse a single feed and return a list of article dicts."""
     articles = []
     try:
         feed = feedparser.parse(url, request_headers=HEADERS)
         if feed.bozo and not feed.entries:
-            logger.warning("FDE feed [%s] failed: %s", source, feed.bozo_exception)
+            logger.warning("FDE feed [%s] failed (HTTP %s): %s", source, feed.get("status", "?"), feed.bozo_exception)
             return articles
 
         for entry in feed.entries:
@@ -49,7 +63,8 @@ def _parse_feed(source: str, category: str, url: str) -> list:
                 published = entry.get("published", "") or entry.get("updated", "")
 
             raw_desc = entry.get("summary", "") or entry.get("description", "") or ""
-            content = BeautifulSoup(raw_desc, "html.parser").get_text(strip=True)
+            desc_soup = BeautifulSoup(raw_desc, "html.parser")
+            content = desc_soup.get_text(" ", strip=True)
 
             articles.append({
                 "title": title,
@@ -58,6 +73,7 @@ def _parse_feed(source: str, category: str, url: str) -> list:
                 "published": published,
                 "category": category,
                 "content": content,
+                "thumbnail": _entry_thumbnail(entry, desc_soup),
             })
 
     except Exception as e:

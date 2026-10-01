@@ -25,11 +25,12 @@ def _jaccard(a: set, b: set) -> float:
     return len(a & b) / len(a | b)
 
 
-def score_clusters(clusters: list) -> list:
+def score_clusters(clusters: list, save_history: bool = True) -> list:
     """
     Annotate each cluster with 'trend', 'article_count', 'source_count',
     sort by (source_count, article_count) descending, and persist today's
-    snapshot of every cluster for tomorrow's comparison.
+    snapshot of every cluster for tomorrow's comparison (unless
+    save_history is False, e.g. for a dry run).
 
     Returns the same list of cluster dicts, scored and sorted.
     """
@@ -57,7 +58,7 @@ def score_clusters(clusters: list) -> list:
 
     clusters.sort(key=lambda c: (c["source_count"], c["article_count"]), reverse=True)
 
-    for cluster in clusters:
+    for cluster in clusters if save_history else []:
         save_cluster_snapshot(cluster["entities"], cluster["article_count"], cluster["source_count"])
 
     logger.info("Scorer: ranked %d clusters", len(clusters))

@@ -3,3 +3,5 @@ __pycache__/
 .env
 news.db
 venv/
+briefing_preview.html
+logs/

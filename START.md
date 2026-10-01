@@ -14,6 +14,26 @@ python -m fde.run_daily
 
 Takes ~2-3 minutes. Runs once and exits — it is not a background service.
 
+To see the email without sending it, add `--dry-run`: it writes
+`briefing_preview.html` in this folder and leaves `news.db` history untouched.
+
+## What's in the email
+
+- **Written sections** (up to `TOP_N`): US-Iran news threads from the last 24
+  hours, each with its operational-domain badge (MARITIME, AIR, MISSILE,
+  NUCLEAR, LAND, DIPLOMATIC, …), a linked headline and image, a synthesis
+  paragraph, and every source article with its website domain and publish time.
+- **More from the last 24 hours**: everything else the defense and regional
+  outlets published in the window, grouped by outlet, each with image, link,
+  domain and publish time. Al Jazeera and Reuters only list their US-Iran items
+  (their full feeds are mostly sports/entertainment) — `FDE_GENERAL_NEWS_SOURCES`.
+- **Opinion & Commentary**: opinion, commentary, blog and podcast pieces are
+  never written up as sections; they're listed here (`FDE_OPINION_MARKERS`).
+
+Times are publish times shown in IST (`FDE_DISPLAY_TZ_OFFSET_MINUTES` /
+`FDE_DISPLAY_TZ_LABEL`). Al Jazeera homepage links and ISW updates get their
+publish time from the article page itself.
+
 **Before running:** Outlook desktop must be open and signed in. The briefing is
 sent through that live session, so there is no SMTP password or API key to set.
 The first send in a session may raise an Outlook prompt asking to allow a
@@ -38,7 +58,7 @@ FDE_RECIPIENTS=someone@galaxeye.space,someone.else@galaxeye.space
 |---|---|---|
 | Sources (RSS feeds) | `config.py` → `FDE_RSS_FEEDS` | 12 feeds |
 | Topic keywords | `config.py` → `FDE_KEYWORDS` | Iran + proxies + theater |
-| How far back to look | `config.py` → `FDE_RECENCY_HOURS` | 48 hours |
+| How far back to look | `config.py` → `FDE_RECENCY_HOURS` | 24 hours |
 | Full sections in the email | `fde/composer.py` → `TOP_N` | 8 |
 | Model file | `config.py` → `FDE_LOCAL_MODEL_PATH` | Gemma 26B GGUF |
 
@@ -46,14 +66,14 @@ FDE_RECIPIENTS=someone@galaxeye.space,someone.else@galaxeye.space
 
 `fde/run_daily.py` calls, in sequence:
 
-1. `scrapers/` (Al Jazeera, Reuters) + `fde/scrapers/` (12 RSS feeds, ISW) — scrape
-2. `fde/filter.py` — drop anything older than 48h or not US-Iran related
+1. `scrapers/reuters.py` + `fde/scrapers/` (Al Jazeera, 12 RSS feeds, ISW) — scrape
+2. `fde/filter.py` — drop anything older than 24h; split US-Iran news from opinion and everything else
 3. `fde/store.py` — drop anything already sent in a previous briefing
-4. `fde/enrich.py` — fetch each article's real page text and image
+4. `fde/enrich.py` / `fde/pagemeta.py` — fetch real page text, image and publish time
 5. `fde/extractor.py` — local LLM pulls entities + relationships per article
 6. `fde/linker.py` — group articles into story threads
-7. `fde/scorer.py` — rank threads, tag ESCALATING / STEADY / DEVELOPING
-8. `fde/composer.py` — write each thread's paragraph, build the HTML email
+7. `fde/scorer.py` — rank threads by how many outlets carry them
+8. `fde/domains.py` + `fde/composer.py` — domain badge, each thread's paragraph, the listing, the HTML email
 9. `fde/mailer.py` — send via Outlook
 
 ## Where the data is
@@ -62,9 +82,8 @@ Everything is in `news.db` in this folder (shared with the dashboard, separate
 tables):
 
 - `fde_sent_articles` — already-briefed URLs, so stories do not repeat
-- `fde_cluster_history` — daily thread snapshots; this is what makes the
-  ESCALATING / STEADY tags work, so it needs a few consecutive days of runs
-  before those tags mean anything
+- `fde_cluster_history` — daily thread snapshots (the scorer still records a
+  trend per thread; the email no longer shows it)
 
 ## If something goes wrong
 
@@ -73,7 +92,7 @@ tables):
 | `ModuleNotFoundError: No module named 'http.client'` | `KMP_DUPLICATE_LIB_OK` / env issue — see above |
 | `Operation aborted` from the mailer | The Outlook allow-prompt was closed instead of allowed |
 | "No new relevant articles today — skipping send" | Everything in the window was already briefed; normal on a quiet day |
-| A feed logs `mismatched tag` | That source served malformed XML this run; it is skipped and the rest continues |
+| A feed logs `mismatched tag` | Usually `HTTP 403` in the same line: the site blocked the request (Breaking Defense does this intermittently, Times of Israel always). It is skipped and the rest continues |
 
 Reuters and Times of Israel articles stay headline-only — Reuters comes via a
 Google News redirect that cannot be fetched, and Times of Israel returns 403 to

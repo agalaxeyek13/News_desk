@@ -116,7 +116,23 @@ FDE_RSS_FEEDS = [
 ]
 
 # How far back an article can be published and still count as "today's" news
-FDE_RECENCY_HOURS = int(os.getenv("FDE_RECENCY_HOURS", 48))
+FDE_RECENCY_HOURS = int(os.getenv("FDE_RECENCY_HOURS", 24))
+
+# Opinion / commentary is never written up as a briefing section — it's
+# listed under "Opinion & Commentary" instead. Matched against the URL.
+FDE_OPINION_MARKERS = [
+    "/opinion", "/opinions/", "/commentary/", "/op-ed", "/oped/", "/editorial",
+    "/blogs/", "/dispatches/", "/podcast",
+]
+
+# General-news sources whose full feeds cover sports, entertainment, etc.
+# Only their US-Iran-relevant items are listed; every other source lists
+# everything it published in the window.
+FDE_GENERAL_NEWS_SOURCES = ["Al Jazeera", "Reuters"]
+
+# Times in the email are shown in this zone (default IST, UTC+5:30).
+FDE_DISPLAY_TZ_OFFSET_MINUTES = int(os.getenv("FDE_DISPLAY_TZ_OFFSET_MINUTES", 330))
+FDE_DISPLAY_TZ_LABEL = os.getenv("FDE_DISPLAY_TZ_LABEL", "IST")
 
 # ISW's Iran Update has no RSS — scraped from this listing page instead.
 FDE_ISW_LISTING_URL = "https://www.understandingwar.org/backgrounder/iran-update"

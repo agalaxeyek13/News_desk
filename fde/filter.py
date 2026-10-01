@@ -11,11 +11,21 @@ in *today's* briefing.
 import logging
 from datetime import datetime, timedelta
 
-from config import FDE_KEYWORDS, FDE_RECENCY_HOURS
+from config import FDE_KEYWORDS, FDE_RECENCY_HOURS, FDE_OPINION_MARKERS
 
 logger = logging.getLogger(__name__)
 
 _PUBLISHED_FORMAT = "%Y-%m-%d %H:%M:%S"
+_OPINION_TITLE_PREFIXES = ("opinion:", "op-ed:", "commentary:", "podcast:", "editorial:")
+
+
+def is_opinion(article: dict) -> bool:
+    """True for opinion, commentary and podcast pieces — not news events.
+    Judged by URL section and title only: feed category tags are unreliable
+    (Al Jazeera's RSS tags some /news/ stories "Opinions")."""
+    url = (article.get("url") or "").lower()
+    title = (article.get("title") or "").lower()
+    return any(marker in url for marker in FDE_OPINION_MARKERS) or title.startswith(_OPINION_TITLE_PREFIXES)
 
 
 def is_relevant(article: dict) -> bool:
@@ -40,9 +50,12 @@ def is_recent(article: dict, hours: int = FDE_RECENCY_HOURS) -> bool:
     return published_dt >= datetime.utcnow() - timedelta(hours=hours)
 
 
-def filter_articles(articles: list, hours: int = FDE_RECENCY_HOURS) -> list:
-    """Return only articles that are both recent (last `hours`) and US-Iran relevant."""
+def filter_recent(articles: list, hours: int = FDE_RECENCY_HOURS) -> list:
     recent = [a for a in articles if is_recent(a, hours)]
     logger.info("Recency filter (%dh): %d of %d articles kept", hours, len(recent), len(articles))
-    relevant = [a for a in recent if is_relevant(a)]
-    return relevant
+    return recent
+
+
+def filter_articles(articles: list, hours: int = FDE_RECENCY_HOURS) -> list:
+    """Return only articles that are both recent (last `hours`) and US-Iran relevant."""
+    return [a for a in filter_recent(articles, hours) if is_relevant(a)]

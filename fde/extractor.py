@@ -81,7 +81,9 @@ def extract(article: dict) -> dict:
     if not text:
         return dict(_EMPTY)
 
-    raw = chat(_SYSTEM_PROMPT, text, max_tokens=600)
+    # 600 cut long relationship lists off mid-JSON; ~4000 chars of input
+    # (~1000 tokens) + 1000 out still fits FDE_LOCAL_MODEL_CTX=4096.
+    raw = chat(_SYSTEM_PROMPT, text, max_tokens=1000)
     if not raw:
         return dict(_EMPTY)
 

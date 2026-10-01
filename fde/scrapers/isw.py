@@ -15,6 +15,7 @@ import requests
 from bs4 import BeautifulSoup
 
 from config import FDE_ISW_LISTING_URL
+from fde.pagemeta import extract_published, extract_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -38,19 +39,20 @@ def _parse_published(title: str) -> str:
         return ""
 
 
-def _fetch_body(url: str) -> str:
-    """Fetch one Iran Update article page and return its body text."""
+def _fetch_article(article: dict) -> None:
+    """Fetch one Iran Update page: body text, real publish time, og:image."""
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=20)
+        resp = requests.get(article["url"], headers=HEADERS, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
         div = soup.find("div", class_="dynamic-entry-content")
-        if not div:
-            return ""
-        return div.get_text(" ", strip=True)[:_MAX_CONTENT_CHARS]
+        if div:
+            article["content"] = div.get_text(" ", strip=True)[:_MAX_CONTENT_CHARS]
+        # The title only gives the date; the page has the actual publish time.
+        article["published"] = extract_published(soup, resp.text) or article["published"]
+        article["thumbnail"] = extract_thumbnail(soup)
     except Exception as e:
-        logger.warning("ISW article fetch failed [%s]: %s", url, e)
-        return ""
+        logger.warning("ISW article fetch failed [%s]: %s", article["url"], e)
 
 
 def scrape() -> list:
@@ -82,7 +84,7 @@ def scrape() -> list:
         logger.info("ISW Iran Update: %d entries found, fetching bodies", len(articles))
 
         for article in articles:
-            article["content"] = _fetch_body(article["url"])
+            _fetch_article(article)
 
     except Exception as e:
         logger.error("ISW Iran Update scrape error: %s", e)

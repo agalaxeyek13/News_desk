@@ -8,21 +8,29 @@ deliberately NOT built the way the browser mockup was.
 
 import logging
 import re
-from datetime import date
+from collections import OrderedDict
+from datetime import datetime, timedelta, timezone
+from urllib.parse import urlparse
 
 from fde.llm import chat
-from config import FDE_TEAM_NAME
+from fde.domains import classify, DOMAIN_COLORS, DEFAULT_DOMAIN
+from fde.filter import is_opinion
+from config import (
+    FDE_TEAM_NAME, FDE_RECENCY_HOURS,
+    FDE_DISPLAY_TZ_OFFSET_MINUTES, FDE_DISPLAY_TZ_LABEL,
+)
 
 logger = logging.getLogger(__name__)
 
-_TREND_COLORS = {
-    "ESCALATING": ("#f4dede", "#8a1f1f"),
-    "STEADY":     ("#eceae4", "#6b6b68"),
-    "DEVELOPING": ("#f6ead2", "#8a5a12"),
-}
+TOP_N = 8  # full written sections; everything else is listed by source below
 
-TOP_N = 8        # full written sections
-ALSO_NOTED_N = 12  # one-line links for everything else that cleared the gate
+_DISPLAY_TZ = timezone(timedelta(minutes=FDE_DISPLAY_TZ_OFFSET_MINUTES))
+_PUBLISHED_FORMAT = "%Y-%m-%d %H:%M:%S"
+_SANS = "'Helvetica Neue',Helvetica,Arial,sans-serif"
+_SERIF = "Georgia,'Times New Roman',serif"
+
+# Sources whose links are redirects (Google News) — show the outlet's own domain.
+_SOURCE_DOMAINS = {"Reuters": "reuters.com"}
 
 
 _SYNTHESIS_SYSTEM_PROMPT = """You write one short paragraph (3-4 sentences) for an internal defense-industry \
@@ -96,18 +104,63 @@ def _escape(text: str) -> str:
         .replace("&", "&amp;")
         .replace("<", "&lt;")
         .replace(">", "&gt;")
+        .replace('"', "&quot;")
     )
 
 
-def _sources_line(cluster: dict) -> str:
-    seen = {}
-    for a in cluster["articles"]:
-        seen.setdefault(a["source"], a["url"])
-    links = " &middot; ".join(
-        f'<a href="{_escape(url)}" style="color:#141413;text-decoration:underline;">{_escape(src)}</a>'
-        for src, url in seen.items()
+def _site_domain(article: dict) -> str:
+    if article.get("source") in _SOURCE_DOMAINS:
+        return _SOURCE_DOMAINS[article["source"]]
+    host = urlparse(article.get("url", "")).netloc.lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def _parse_published(article: dict):
+    try:
+        return datetime.strptime(article.get("published", ""), _PUBLISHED_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def _local(dt: datetime) -> str:
+    return dt.astimezone(_DISPLAY_TZ).strftime("%d %b, %H:%M ") + FDE_DISPLAY_TZ_LABEL
+
+
+def _time_label(article: dict) -> str:
+    dt = _parse_published(article)
+    if dt is None:
+        return "time unknown"
+    if article.get("live"):
+        return "Live blog &middot; opened " + dt.strftime("%d %b")
+    return _local(dt)
+
+
+def _newest_first(articles: list) -> list:
+    epoch = datetime.min.replace(tzinfo=timezone.utc)
+    return sorted(articles, key=lambda a: _parse_published(a) or epoch, reverse=True)
+
+
+def _link(url: str, text: str, style: str = "color:#141413;text-decoration:none;") -> str:
+    return f'<a href="{_escape(url)}" style="{style}">{text}</a>'
+
+
+def _meta_line(article: dict) -> str:
+    """'domain · 01 Oct, 17:26 IST' under a headline."""
+    return f"{_escape(_site_domain(article))} &middot; {_time_label(article)}"
+
+
+def _sources_html(cluster: dict) -> str:
+    """Every article in the thread: outlet (linked) · domain · publish time."""
+    rows = "".join(
+        f'<div style="margin-top:3px;">'
+        f'{_link(a["url"], _escape(a["source"]), "color:#141413;text-decoration:underline;")}'
+        f' &middot; {_meta_line(a)}</div>'
+        for a in cluster["articles"]
     )
-    return links
+    return (
+        f'<div style="font-family:{_SANS};font-size:11.5px;color:#6b6b68;">'
+        f'<span style="font-weight:700;color:#8a8a86;">SOURCES</span>{rows}</div>'
+    )
 
 
 def _extractive_fallback(cluster: dict) -> str:
@@ -120,18 +173,61 @@ def _extractive_fallback(cluster: dict) -> str:
     return snippet[:last_period + 1] if last_period > 100 else snippet
 
 
+_PLACEHOLDER_IMAGE_USES = 3  # one image on this many articles is a site default, not a photo
+
+
+def _image_key(url: str) -> str:
+    return url.split("?", 1)[0]  # the query string is only resize/cache parameters
+
+
+def _dedupe_thumbnails(sections: list, listed: list) -> None:
+    """Never show the same picture twice in one email.
+
+    An image carried by several articles is a site placeholder (every
+    Middle East Eye live-blog update has the blog's cover image) and is
+    dropped everywhere. Otherwise the first use in email order keeps it:
+    each section shows the first of its articles with a still-unused
+    image, then the listing rows in the order they're rendered."""
+    everyone = [a for c in sections for a in c["articles"]] + listed
+    uses = {}
+    for a in everyone:
+        if a.get("thumbnail"):
+            uses[_image_key(a["thumbnail"])] = uses.get(_image_key(a["thumbnail"]), 0) + 1
+
+    shown = set()
+
+    def claim(article) -> bool:
+        k = _image_key(article.get("thumbnail") or "")
+        if not k or uses[k] >= _PLACEHOLDER_IMAGE_USES or k in shown:
+            article["thumbnail"] = ""
+            return False
+        shown.add(k)
+        return True
+
+    for cluster in sections:
+        for i, article in enumerate(cluster["articles"]):
+            if claim(article):
+                # The section renders this one; the rest of its articles show no image.
+                for other in cluster["articles"][i + 1:]:
+                    other["thumbnail"] = ""
+                break
+    for article in listed:
+        claim(article)
+
+
 def _thumbnail_html(cluster: dict) -> str:
-    """First available thumbnail image across the cluster's articles, if any.
+    """First available thumbnail across the thread, linked to its article.
     Outlook blocks external images by default until the recipient clicks
     'Download pictures' — that's an Outlook setting, not something this
     code can override."""
-    thumbnail = next((a.get("thumbnail") for a in cluster["articles"] if a.get("thumbnail")), None)
-    if not thumbnail:
+    article = next((a for a in cluster["articles"] if a.get("thumbnail")), None)
+    if not article:
         return ""
-    return (
-        f'<img src="{_escape(thumbnail)}" alt="" width="544" '
+    img = (
+        f'<img src="{_escape(article["thumbnail"])}" alt="" width="544" '
         f'style="width:544px;max-width:544px;height:auto;display:block;margin:10px 0;border:1px solid #e2e2df;">'
     )
+    return _link(article["url"], img)
 
 
 def _tag_label(cluster: dict) -> str:
@@ -160,84 +256,122 @@ def _connections_html(cluster: dict) -> str:
         for r in triples[:3]
     )
     return (
-        f'<div style="font-family:\'Helvetica Neue\',Helvetica,Arial,sans-serif;font-size:11px;'
+        f'<div style="font-family:{_SANS};font-size:11px;'
         f'font-style:italic;color:#8a8a86;margin-top:6px;">{items}</div>'
     )
 
 
 def _section_html(cluster: dict) -> str:
-    bg, fg = _TREND_COLORS.get(cluster["trend"], _TREND_COLORS["STEADY"])
-    tag_label = _tag_label(cluster)
-    headline = cluster["articles"][0]["title"]
+    domain = cluster["domain"]
+    bg, fg = DOMAIN_COLORS.get(domain, DOMAIN_COLORS[DEFAULT_DOMAIN])
+    lead = cluster["articles"][0]
     body = cluster.get("synthesis") or _extractive_fallback(cluster)
-    connections = _connections_html(cluster)
-    thumbnail = _thumbnail_html(cluster)
     return f"""
-    <tr><td style="padding: 22px 28px; border-bottom: 1px solid #e2e2df; font-family: Georgia, 'Times New Roman', serif;">
+    <tr><td style="padding: 22px 28px; border-bottom: 1px solid #e2e2df; font-family: {_SERIF};">
       <table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>
-        <td style="background: {bg}; color: {fg}; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10px; font-weight: 700; letter-spacing: 0.8px; padding: 3px 8px; border-radius: 3px;">{cluster['trend']}</td>
+        <td style="background: {bg}; color: {fg}; font-family: {_SANS}; font-size: 10px; font-weight: 700; letter-spacing: 0.8px; padding: 3px 8px; border-radius: 3px;">{domain}</td>
         <td style="width: 8px;"></td>
-        <td style="color: #8a8a86; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 11px;">{tag_label}</td>
+        <td style="color: #8a8a86; font-family: {_SANS}; font-size: 11px;">{_escape(_tag_label(cluster))}</td>
       </tr></table>
       <div style="height: 10px;"></div>
-      <div style="font-size: 21px; font-weight: 700; line-height: 1.3; color: #141413;">{_escape(headline)}</div>
-      {connections}
-      {thumbnail}
+      <div style="font-size: 21px; font-weight: 700; line-height: 1.3;">{_link(lead["url"], _escape(lead["title"]))}</div>
+      <div style="font-family: {_SANS}; font-size: 11px; color: #8a8a86; margin-top: 4px;">{_meta_line(lead)}</div>
+      {_connections_html(cluster)}
+      {_thumbnail_html(cluster)}
       <div style="height: 8px;"></div>
       <div style="font-size: 14.5px; line-height: 1.6; color: #3a3a38;">{_escape(body)}</div>
-      <div style="height: 10px;"></div>
-      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 11.5px; color: #6b6b68;">Sources: {_sources_line(cluster)}</div>
+      <div style="height: 12px;"></div>
+      {_sources_html(cluster)}
     </td></tr>
     """
 
 
-def _also_noted_html(clusters: list) -> str:
-    if not clusters:
-        return ""
-    rows = ""
-    for cluster in clusters[:ALSO_NOTED_N]:
-        article = cluster["articles"][0]
-        rows += (
-            f'<div style="font-size: 13.5px; line-height: 1.5; color: #3a3a38; '
-            f'font-family: Georgia, \'Times New Roman\', serif; margin-bottom: 10px;">'
-            f'{_escape(article["title"])} — '
-            f'<a href="{_escape(article["url"])}" style="color:#141413;">{_escape(article["source"])} &rarr;</a>'
-            f'</div>'
+def _listing_row(article: dict) -> str:
+    thumb = ""
+    if article.get("thumbnail"):
+        img = (
+            f'<img src="{_escape(article["thumbnail"])}" alt="" width="84" '
+            f'style="width:84px;height:auto;display:block;border:1px solid #e2e2df;">'
         )
+        thumb = _link(article["url"], img)
     return f"""
-    <tr><td style="padding: 20px 28px 6px;">
-      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; color: #8a8a86; font-weight: 700; margin-bottom: 12px;">Also Noted</div>
-      {rows}
+      <tr>
+        <td width="96" valign="top" style="width:96px;padding:0 12px 14px 0;">{thumb}</td>
+        <td valign="top" style="padding:0 0 14px;">
+          <div style="font-family:{_SERIF};font-size:14px;line-height:1.4;font-weight:700;">{_link(article["url"], _escape(article["title"]))}</div>
+          <div style="font-family:{_SANS};font-size:11px;color:#8a8a86;margin-top:3px;">{_meta_line(article)}</div>
+        </td>
+      </tr>"""
+
+
+def _listing_block(title: str, articles: list) -> str:
+    """Headlines grouped by outlet, newest first, each with image, domain and time."""
+    if not articles:
+        return ""
+    by_source = OrderedDict()
+    for article in _newest_first(articles):
+        by_source.setdefault(article["source"], []).append(article)
+
+    groups = ""
+    for source, items in sorted(by_source.items(), key=lambda kv: kv[0].lower()):
+        rows = "".join(_listing_row(a) for a in items)
+        groups += f"""
+      <div style="font-family:{_SANS};font-size:12px;font-weight:700;color:#141413;margin:14px 0 8px;">
+        {_escape(source)} <span style="font-weight:400;color:#8a8a86;">&middot; {_escape(_site_domain(items[0]))} &middot; {len(items)}</span>
+      </div>
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">{rows}</table>"""
+
+    return f"""
+    <tr><td style="padding: 20px 28px 6px; border-bottom: 1px solid #e2e2df;">
+      <div style="font-family:{_SANS};font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#8a8a86;font-weight:700;">{title} ({len(articles)})</div>
+      {groups}
     </td></tr>
     """
 
 
-def compose_email(clusters: list) -> tuple:
+def compose_email(clusters: list, listing: list = None) -> tuple:
     """
     Give a full written section to every cluster that has enough source
-    text to synthesize honestly (up to TOP_N), and demote the rest —
-    genuinely thin ones, or overflow beyond TOP_N — to one-line "Also
-    Noted" links instead of padding out a section with an apology.
+    text to synthesize honestly (up to TOP_N). Every other article from the
+    window — thin or overflow clusters, plus `listing` (non-Iran items from
+    the defense/regional outlets, opinion pieces) — is listed by outlet
+    below, each with its image, domain and publish time.
     Returns (subject, html_body).
     """
     content_rich = [c for c in clusters if has_enough_content(c)]
-    thin = [c for c in clusters if not has_enough_content(c)]
-
     top = content_rich[:TOP_N]
-    rest = content_rich[TOP_N:] + thin
+    top_ids = {id(c) for c in top}
+
+    remaining = [a for c in clusters if id(c) not in top_ids for a in c["articles"]]
+    remaining += listing or []
+    opinion = [a for a in remaining if is_opinion(a)]
+    news = [a for a in remaining if not is_opinion(a)]
+
+    def listing_order(items):
+        return sorted(_newest_first(items), key=lambda a: a["source"].lower())
+
+    _dedupe_thumbnails(top, listing_order(news) + listing_order(opinion))
 
     for cluster in top:
+        cluster["domain"] = classify(cluster)
         cluster["synthesis"] = _synthesize(cluster)
 
-    today_str = date.today().strftime("%A, %B %d, %Y")
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(hours=FDE_RECENCY_HOURS)
+    today_str = now.astimezone(_DISPLAY_TZ).strftime("%A, %B %d, %Y")
+
+    domain_counts = OrderedDict()
+    for c in top:
+        domain_counts[c["domain"]] = domain_counts.get(c["domain"], 0) + 1
+    domains_line = " &middot; ".join(f"{k.title()} {v}" for k, v in domain_counts.items())
+    sources = {a["source"] for c in clusters for a in c["articles"]} | {a["source"] for a in listing or []}
+    brief_line = (
+        f"{len(top)} stories in detail, {len(news)} more headlines and {len(opinion)} opinion pieces "
+        f"from {len(sources)} outlets, published {_local(window_start)} &ndash; {_local(now)}."
+    )
 
     sections = "".join(_section_html(c) for c in top)
-    also_noted = _also_noted_html(rest)
-
-    lead_trend_counts = {}
-    for c in top:
-        lead_trend_counts[c["trend"]] = lead_trend_counts.get(c["trend"], 0) + 1
-    brief_line = ", ".join(f"{v} {k.lower()}" for k, v in lead_trend_counts.items()) or "no active threads"
+    listed = _listing_block("More from the last 24 hours", news) + _listing_block("Opinion &amp; Commentary", opinion)
 
     html = f"""<!doctype html>
 <html lang="en">
@@ -250,26 +384,27 @@ def compose_email(clusters: list) -> tuple:
 <tr><td style="background:#141413;padding:22px 28px 18px;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0">
   <tr>
-    <td style="color:#ffffff;font-family:Georgia,'Times New Roman',serif;font-size:22px;font-weight:700;letter-spacing:0.5px;">{_escape(FDE_TEAM_NAME)} BRIEFING</td>
-    <td align="right" style="color:#a8a8a4;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:10px;letter-spacing:1px;text-transform:uppercase;">Internal Distribution</td>
+    <td style="color:#ffffff;font-family:{_SERIF};font-size:22px;font-weight:700;letter-spacing:0.5px;">{_escape(FDE_TEAM_NAME)} BRIEFING</td>
+    <td align="right" style="color:#a8a8a4;font-family:{_SANS};font-size:10px;letter-spacing:1px;text-transform:uppercase;">Internal Distribution</td>
   </tr>
   <tr>
-    <td style="color:#a8a8a4;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;">US&ndash;Iran Watch &middot; Daily</td>
-    <td align="right" style="color:#a8a8a4;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:11px;">{today_str}</td>
+    <td style="color:#a8a8a4;font-family:{_SANS};font-size:11px;">US&ndash;Iran Watch &middot; Daily</td>
+    <td align="right" style="color:#a8a8a4;font-family:{_SANS};font-size:11px;">{today_str}</td>
   </tr>
   </table>
 </td></tr>
 
 <tr><td style="padding:22px 28px 18px;border-bottom:1px solid #e2e2df;">
-  <div style="font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#8a1f1f;font-weight:700;margin-bottom:8px;">Today in Brief</div>
-  <div style="font-family:Georgia,'Times New Roman',serif;font-size:15.5px;line-height:1.55;color:#141413;">{len(clusters)} US-Iran story thread(s) tracked today ({brief_line}).</div>
+  <div style="font-family:{_SANS};font-size:10px;letter-spacing:1.5px;text-transform:uppercase;color:#8a1f1f;font-weight:700;margin-bottom:8px;">Today in Brief</div>
+  <div style="font-family:{_SERIF};font-size:15.5px;line-height:1.55;color:#141413;">{brief_line}</div>
+  <div style="font-family:{_SANS};font-size:11px;color:#8a8a86;margin-top:6px;">{domains_line}</div>
 </td></tr>
 
 {sections}
-{also_noted}
+{listed}
 
-<tr><td style="padding:16px 28px 24px;border-top:1px solid #e2e2df;color:#9a9a96;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;font-size:10.5px;line-height:1.6;">
-  Compiled automatically from the open-source reporting linked above. Verify independently before acting on any item. Internal distribution only &mdash; do not forward externally.
+<tr><td style="padding:16px 28px 24px;color:#9a9a96;font-family:{_SANS};font-size:10.5px;line-height:1.6;">
+  Compiled automatically from the open-source reporting linked above. Times are publish times in {FDE_DISPLAY_TZ_LABEL}. Verify independently before acting on any item. Internal distribution only &mdash; do not forward externally.
 </td></tr>
 
 </table>

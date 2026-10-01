@@ -1,3 +1,3 @@
-from fde.scrapers import rss, isw
+from fde.scrapers import rss, isw, aljazeera
 
-__all__ = ["rss", "isw"]
+__all__ = ["rss", "isw", "aljazeera"]

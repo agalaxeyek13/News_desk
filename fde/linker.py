@@ -125,6 +125,7 @@ _TITLE_SYNONYMS = {
 }
 
 _TITLE_DUPLICATE_THRESHOLD = 0.40
+_MEMBER_DUPLICATE_THRESHOLD = 0.60
 _SHORT_TOKEN_KEEP = {"un", "us", "uk", "eu", "oil", "gas", "war", "jet", "f35"}
 
 
@@ -194,17 +195,28 @@ def _order_articles(articles: list, signal_sets: list = None) -> list:
     return [article for _, article in indexed]
 
 
+def _is_same_story(a: dict, b: dict) -> bool:
+    """Lead headlines that are near-duplicates, or any pair of member
+    headlines that are almost identical — a wire story republished by
+    another outlet can sit in a thread led by a different headline."""
+    if _jaccard(_title_tokens(a["articles"][0]["title"]),
+                _title_tokens(b["articles"][0]["title"])) >= _TITLE_DUPLICATE_THRESHOLD:
+        return True
+    tokens_b = [_title_tokens(x["title"]) for x in b["articles"]]
+    return any(
+        _jaccard(_title_tokens(x["title"]), t) >= _MEMBER_DUPLICATE_THRESHOLD
+        for x in a["articles"] for t in tokens_b
+    )
+
+
 def _merge_near_duplicate_threads(clusters: list) -> list:
-    """Fold together threads whose lead headlines are near-duplicates —
-    the same story carried by several wires under different wording."""
+    """Fold together threads that carry the same story under different wording."""
     merged_any = True
     while merged_any:
         merged_any = False
         for i in range(len(clusters)):
-            tokens_i = _title_tokens(clusters[i]["articles"][0]["title"])
             for j in range(i + 1, len(clusters)):
-                tokens_j = _title_tokens(clusters[j]["articles"][0]["title"])
-                if _jaccard(tokens_i, tokens_j) < _TITLE_DUPLICATE_THRESHOLD:
+                if not _is_same_story(clusters[i], clusters[j]):
                     continue
                 target, source = clusters[i], clusters.pop(j)
                 target["articles"] = _order_articles(target["articles"] + source["articles"])
